@@ -1,0 +1,84 @@
+name: Application CI/CD
+
+on:
+  workflow_dispatch:   # Manual trigger
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+
+    # 1️⃣ Checkout code
+    - name: Checkout Repository
+      uses: actions/checkout@v3
+
+    # 2️⃣ Backend Lint
+    - name: Backend Lint
+      run: |
+        pip install flake8
+        flake8 my_backend || true
+
+    # 3️⃣ Setup Node
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+
+    # 4️⃣ Frontend Build
+    - name: Build Frontend
+      run: |
+        cd frontend
+        npm install
+        npm run build
+
+    # 5️⃣ Build Backend Image
+    - name: Build Backend Docker Image
+      run: |
+        docker build -t ${{ secrets.DOCKER_USER }}/crop-backend:latest ./my_backend
+
+    # 6️⃣ Build Frontend Image
+    - name: Build Frontend Docker Image
+      run: |
+        docker build -t ${{ secrets.DOCKER_USER }}/crop-frontend:latest ./frontend
+
+    # 7️⃣ Docker Login
+    - name: Docker Login
+      run: |
+        echo "${{ secrets.DOCKER_PASS }}" | docker login -u "${{ secrets.DOCKER_USER }}" --password-stdin
+
+    # 8️⃣ Push Images
+    - name: Push Docker Images
+      run: |
+        docker push ${{ secrets.DOCKER_USER }}/crop-backend:latest
+        docker push ${{ secrets.DOCKER_USER }}/crop-frontend:latest
+
+    # 9️⃣ Deploy to EC2
+    - name: Deploy to EC2
+      uses: appleboy/ssh-action@v0.1.10
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ec2-user
+        key: ${{ secrets.EC2_KEY }}
+        script: |
+
+          # Start docker
+          sudo systemctl start docker
+
+          # Login DockerHub
+          docker login -u ${{ secrets.DOCKER_USER }} -p ${{ secrets.DOCKER_PASS }}
+
+          # Pull latest images
+          docker pull ${{ secrets.DOCKER_USER }}/crop-backend:latest
+          docker pull ${{ secrets.DOCKER_USER }}/crop-frontend:latest
+
+          # Stop old containers
+          docker stop backend || true
+          docker rm backend || true
+
+          docker stop frontend || true
+          docker rm frontend || true
+
+          # Run new containers
+          docker run -d -p 5000:5000 --name backend ${{ secrets.DOCKER_USER }}/crop-backend:latest
+          docker run -d -p 5173:5173 --name frontend ${{ secrets.DOCKER_USER }}/crop-frontend:latest
