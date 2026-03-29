@@ -1,84 +1,105 @@
 name: Application CI/CD
 
 on:
-  workflow_dispatch:   # Manual trigger
+  workflow_dispatch:
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
 
     # 1️⃣ Checkout code
-    - name: Checkout Repository
+    - name: Checkout
       uses: actions/checkout@v3
 
-    # 2️⃣ Backend Lint
+    # 2️⃣ Setup Terraform (to fetch EC2 IP)
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+
+    # 3️⃣ Configure AWS
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ap-south-1
+
+    # 4️⃣ Get EC2 Public IP dynamically
+    - name: Get EC2 Public IP
+      run: |
+        cd terraform
+        terraform init
+        echo "EC2_IP=$(terraform output -raw ec2_public_ip)" >> $GITHUB_ENV
+
+    # 5️⃣ Backend Lint
     - name: Backend Lint
       run: |
         pip install flake8
         flake8 my_backend || true
 
-    # 3️⃣ Setup Node
+    # 6️⃣ Setup Node
     - name: Setup Node
       uses: actions/setup-node@v4
       with:
         node-version: "20"
 
-    # 4️⃣ Frontend Build
+    # 7️⃣ Build Frontend
     - name: Build Frontend
       run: |
         cd frontend
         npm install
         npm run build
 
-    # 5️⃣ Build Backend Image
-    - name: Build Backend Docker Image
+    # 8️⃣ Build Backend Docker Image
+    - name: Build Backend Image
       run: |
         docker build -t ${{ secrets.DOCKER_USER }}/crop-backend:latest ./my_backend
 
-    # 6️⃣ Build Frontend Image
-    - name: Build Frontend Docker Image
+    # 9️⃣ Build Frontend Docker Image
+    - name: Build Frontend Image
       run: |
         docker build -t ${{ secrets.DOCKER_USER }}/crop-frontend:latest ./frontend
 
-    # 7️⃣ Docker Login
+    # 🔟 Docker Login
     - name: Docker Login
       run: |
         echo "${{ secrets.DOCKER_PASS }}" | docker login -u "${{ secrets.DOCKER_USER }}" --password-stdin
 
-    # 8️⃣ Push Images
+    # 11️⃣ Push Images
     - name: Push Docker Images
       run: |
         docker push ${{ secrets.DOCKER_USER }}/crop-backend:latest
         docker push ${{ secrets.DOCKER_USER }}/crop-frontend:latest
 
-    # 9️⃣ Deploy to EC2
+    # 12️⃣ Deploy using docker-compose (FINAL FIX)
     - name: Deploy to EC2
       uses: appleboy/ssh-action@v0.1.10
       with:
-        host: ${{ secrets.EC2_HOST }}
+        host: ${{ env.EC2_IP }}
         username: ec2-user
         key: ${{ secrets.EC2_KEY }}
         script: |
 
-          # Start docker
-          sudo systemctl start docker
+          # Navigate to app folder
+          mkdir -p app && cd app
 
-          # Login DockerHub
-          docker login -u ${{ secrets.DOCKER_USER }} -p ${{ secrets.DOCKER_PASS }}
+          # Create docker-compose file dynamically
+          cat <<EOF > docker-compose.yml
+          version: "3.9"
+          services:
+            backend:
+              image: ${{ secrets.DOCKER_USER }}/crop-backend:latest
+              ports:
+                - "5000:5000"
 
-          # Pull latest images
-          docker pull ${{ secrets.DOCKER_USER }}/crop-backend:latest
-          docker pull ${{ secrets.DOCKER_USER }}/crop-frontend:latest
+            frontend:
+              image: ${{ secrets.DOCKER_USER }}/crop-frontend:latest
+              ports:
+                - "5173:5173"
+          EOF
 
-          # Stop old containers
-          docker stop backend || true
-          docker rm backend || true
-
-          docker stop frontend || true
-          docker rm frontend || true
-
-          # Run new containers
-          docker run -d -p 5000:5000 --name backend ${{ secrets.DOCKER_USER }}/crop-backend:latest
-          docker run -d -p 5173:5173 --name frontend ${{ secrets.DOCKER_USER }}/crop-frontend:latest
+          # Deploy containers
+          docker-compose down || true
+          docker-compose pull
+          docker-compose up -d

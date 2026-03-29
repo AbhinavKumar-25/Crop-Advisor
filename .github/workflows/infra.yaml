@@ -1,7 +1,7 @@
 name: Infra Provision (Terraform)
 
 on:
-  workflow_dispatch:   # Manual trigger
+  workflow_dispatch:
 
 jobs:
   terraform:
@@ -9,16 +9,16 @@ jobs:
 
     steps:
 
-    # 1️⃣ Checkout code
-    - name: Checkout Repository
+    # 1️⃣ Checkout repo
+    - name: Checkout
       uses: actions/checkout@v3
 
     # 2️⃣ Setup Terraform
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
 
-    # 3️⃣ Configure AWS Credentials
-    - name: Configure AWS
+    # 3️⃣ Configure AWS
+    - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -43,3 +43,9 @@ jobs:
         cd terraform
         terraform apply -auto-approve \
         -var="key_name=${{ secrets.KEY_NAME }}"
+
+    # 7️⃣ Print EC2 IP (for logs)
+    - name: Print EC2 Public IP
+      run: |
+        cd terraform
+        echo "EC2 Public IP: $(terraform output -raw ec2_public_ip)"
